@@ -2,7 +2,7 @@
 
 Usage:
   dumang_config.py dump
-  dumang_config.py config <file>
+  dumang_config.py config [--use-dkm-serial] <file>
   dumang_config.py gui
   dumang_config.py inspect
   dumang_config.py (-h | --help)
@@ -41,30 +41,67 @@ def init_send_threads(kbds):
 def init_receive_threads(kbds):
     return [Job(target=kbd.receive_thread, daemon=True) for kbd in kbds]
 
-def configure_keys(cfg, b):
+def find_kbd_by_serial(kbds, serial):
+    for kbd in kbds:
+        if kbd.serial == serial:
+            return kbd
+    return None
+
+def find_key_by_serial(kbd, serial):
+    for _, dkm in kbd.configured_keys.items():
+        if dkm.serial == serial:
+            return dkm.key
+    return None
+
+def configure_key(b, key, cfg):
+    layer_keycodes = {}
+    for l in cfg:
+        if not l.startswith("layer_"):
+            continue
+        layer = int(l.split('_')[1])
+        layer_keycodes[layer] = Keycode.fromstr(cfg[l])
+
+    b.put(KeyConfigurePacket(key, layer_keycodes))
+
+    macro = cfg.get("macro")
+    if macro:
+        idx = 0
+        for m in macro:
+            b.put(MacroConfigurePacket(key, idx, MacroType.fromstr(m["type"]), Keycode.fromstr(m["key"]), int(m["delay_ms"])))
+            idx += 1
+        b.put(MacroConfigurePacket(key, idx, MacroType(0), Keycode(0), 0))
+
+def configure_keys(kbd_serial, cfg, kbds, use_dkm_serial):
+    if not use_dkm_serial:
+        b = find_kbd_by_serial(kbds, kbd_serial)
+        if b is None:
+            logger.error(f'Board with serial {kbd_serial} not found')
+            sys.exit(1)
     for k in cfg:
-        key = int(k.split('_')[1], 16)
-        layer_keycodes = {}
-        for l in cfg[k]:
-            if not l.startswith("layer_"):
-                continue
-            layer = int(l.split('_')[1])
-            layer_keycodes[layer] = Keycode.fromstr(cfg[k][l])
+        if use_dkm_serial:
+            serial = cfg[k].get('serial', None)
+            if serial is None:
+                logger.error(f'DKM config without serial {k}')
+                sys.exit(1)
+            b = None
+            key = None
+            for kbd in kbds:
+                key = find_key_by_serial(kbd, serial)
+                if key is not None:
+                    b = kbd
+                    break
+            if key is None:
+                logger.error(f'DKM with serial {serial} not found')
+                sys.exit(1)
+            if b.serial != kbd_serial:
+                logger.warning(f'DKM with serial {serial} found on a different board. Maybe moved from board {kbd_serial} to {b.serial} ?')
+        else:
+            key = int(k.split('_')[1], 16)
+        configure_key(b, key, cfg[k])
 
-        b.put(KeyConfigurePacket(key, layer_keycodes))
-
-        macro = cfg[k].get("macro")
-        if macro:
-            idx = 0
-            for m in macro:
-                b.put(MacroConfigurePacket(key, idx, MacroType.fromstr(m["type"]), Keycode.fromstr(m["key"]), int(m["delay_ms"])))
-                idx += 1
-            b.put(MacroConfigurePacket(key, idx, MacroType(0), Keycode(0), 0))
-
-def configure_board(cfg, b):
+def configure_boards(cfg, kbds, use_dkm_serial):
     for kbd in cfg:
-        if cfg[kbd]['serial'] == b.serial:
-            configure_keys(cfg[kbd]['keys'], b)
+        configure_keys(cfg[kbd]['serial'], cfg[kbd]['keys'], kbds, use_dkm_serial)
 
 def main():
     arguments = docopt(__doc__, version='Dumang DK6 Config Tool 1.0')
@@ -103,10 +140,11 @@ def main():
             kbd.kill_threads()
         yaml.dump(cfg_yml, sys.stdout, allow_unicode=True, default_flow_style=False, sort_keys=False)
     elif arguments['config']:
+        use_dkm_serial = '--use-dkm-serial' in arguments
         ymlfile = open(arguments['<file>'], 'r')
         cfg = yaml.safe_load(ymlfile)
+        configure_boards(cfg, kbds, use_dkm_serial)
         for kbd in kbds:
-            configure_board(cfg, kbd)
             kbd.kill_threads()
         logger.info('Configured.')
     elif arguments['gui']:
