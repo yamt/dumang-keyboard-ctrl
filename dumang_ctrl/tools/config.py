@@ -127,10 +127,12 @@ def main():
         t.start()
 
     if arguments['dump']:
+        n = 0
         cfg_yml = NestedDict()
         for i, kbd in enumerate(kbds):
             cfg_yml['kbd_{}'.format(i)]['serial'] = kbd.serial
             for _, dkm in kbd.configured_keys.items():
+                n += 1
                 cfg_key = cfg_yml['kbd_{}'.format(i)]['keys']['key_{}'.format(dkm.key)]
                 if dkm.serial is not None:
                     cfg_key['serial'] = dkm.serial
@@ -144,6 +146,7 @@ def main():
                     } for m in dkm.macro]
             kbd.kill_threads()
         yaml.dump(cfg_yml, sys.stdout, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        logger.info(f'Dumped {n} keys.')
     elif arguments['config']:
         use_dkm_serial = '--use-dkm-serial' in arguments
         ymlfile = open(arguments['<file>'], 'r')
